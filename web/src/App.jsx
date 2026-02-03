@@ -750,7 +750,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
 
 
 
-  
+
   // x-axis tick selection:
   // - always include current age and ending age
   // - prefer 5-year ticks, fall back to 10-year if space is tight
