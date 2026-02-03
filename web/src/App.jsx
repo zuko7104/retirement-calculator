@@ -31,23 +31,28 @@ function fmt(n) {
   return Math.ceil(n).toLocaleString()
 }
 
-function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, rPre, rPost, g) {
+function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, rPre, rPost, g, pensionAnnual = 0, ssAnnual = 0, ssOffset = 0, fixedIncomeInflation = 0) {
   const N = yearsInRetirement
   if (N <= 0) return { targetCorpus: 0, annual: 0 }
 
   let targetCorpus
   // target corpus at retirement to support inflation-adjusted withdrawals
-  if (Math.abs(rPost - g) > 1e-12) {
-    const q = (1 + g) / (1 + rPost)
-    targetCorpus = withdrawal * (1 - Math.pow(q, N)) / (rPost - g)
-  } else {
-    // fallback: sum discounted growing payments
-    let pv = 0
-    for (let t = 0; t < N; t++) {
-      pv += withdrawal * Math.pow(1 + g, t) / Math.pow(1 + rPost, t + 1)
+  // account for pension (starts at retirement) and social security (starts after ssOffset years)
+  let pv = 0
+  for (let t = 0; t < N; t++) {
+    // base withdrawal in year t (t=0 is first year of retirement)
+    const baseWithdrawal = withdrawal * Math.pow(1 + g, t)
+    // pension starts at retirement and grows by fixedIncomeInflation
+    const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, t)
+    // social security starts at ssOffset (years after retirement) and grows by fixedIncomeInflation from its start
+    let ssAdj = 0
+    if (t >= ssOffset) {
+      ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, t - ssOffset)
     }
-    targetCorpus = pv
+    const netWithdrawal = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
+    pv += netWithdrawal / Math.pow(1 + rPost, t + 1)
   }
+  targetCorpus = pv
 
   const n = yearsToRetire
   const fvAssets = currentAssets * Math.pow(1 + rPre, n)
@@ -80,6 +85,11 @@ export default function App() {
   const [lastAge, setLastAge] = usePersistentState('fin.lastAge', '95')
   const [penaltyFreeAge, setPenaltyFreeAge] = usePersistentState('fin.penaltyFreeAge', '59.5')
   const [withdrawal, setWithdrawal] = usePersistentState('fin.withdrawal', '50000')
+  const [monthlyFixedIncome, setMonthlyFixedIncome] = usePersistentState('fin.monthlyFixedIncome', '0')
+  const [monthlyPension, setMonthlyPension] = usePersistentState('fin.monthlyPension', '0')
+  const [ssStartAge, setSsStartAge] = usePersistentState('fin.ssStartAge', '67')
+  const [monthlySocialSecurity, setMonthlySocialSecurity] = usePersistentState('fin.monthlySocialSecurity', '0')
+  const [fixedIncomeInflation, setFixedIncomeInflation] = usePersistentState('fin.fixedIncomeInflation', '0')
   const [inflation, setInflation] = usePersistentState('fin.inflation', '2')
   const [rPre, setRPre] = usePersistentState('fin.rPre', '6')
   const [rPost, setRPost] = usePersistentState('fin.rPost', '4')
@@ -99,6 +109,15 @@ export default function App() {
   const lastAgeNum = parseNumber(lastAge, 95)
   const penaltyFreeAgeNum = parseNumber(penaltyFreeAge, 59.5)
   const withdrawalVal = parseNumber(withdrawal, 50000)
+  const monthlyFixedIncomeVal = parseNumber(monthlyFixedIncome, 0)
+  const monthlyPensionVal = parseNumber(monthlyPension, 0)
+  const ssStartAgeNum = parseNumber(ssStartAge, retirementAgeNum)
+  const monthlySocialSecurityVal = parseNumber(monthlySocialSecurity, 0)
+  const fixedIncomeInflationPct = parseNumber(fixedIncomeInflation, 0) / 100
+  const fixedIncomeAnnual = monthlyFixedIncomeVal * 12
+  const pensionAnnual = monthlyPensionVal * 12
+  const ssAnnual = monthlySocialSecurityVal * 12
+  const ssOffset = Math.max(0, ssStartAgeNum - retirementAgeNum)
   const inflationPct = parseNumber(inflation, 2) / 100
   const rPrePct = parseNumber(rPre, 6) / 100
   const rPostPct = parseNumber(rPost, 4) / 100
@@ -118,7 +137,11 @@ export default function App() {
     withdrawalVal,
     rPrePct,
     rPostPct,
-    inflationPct
+    inflationPct,
+    pensionAnnual,
+    ssAnnual,
+    ssOffset,
+    fixedIncomeInflationPct
   )
 
   // compute current annual retirement contributions: assume user is not currently contributing (employer match not counted unless user contributes)
@@ -179,12 +202,27 @@ export default function App() {
   if (earlyYears > 0) {
     if (Math.abs(rPostVal - g) > 1e-12) {
       const q = (1 + g) / (1 + rPostVal)
-      earlyNeeded = withdrawalVal * (1 - Math.pow(q, earlyYears)) / (rPostVal - g)
+      // compute PV of net withdrawals in the early years accounting for pension and SS
+      let pvEarly = 0
+      for (let t = 0; t < earlyYears; t++) {
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, t)
+        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, t)
+        let ssAdj = 0
+        if (t >= ssOffset) ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, t - ssOffset)
+        const net = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
+        pvEarly += net / Math.pow(1 + rPostVal, t + 1)
+      }
+      earlyNeeded = pvEarly
     } else {
       // fallback sum
       let pv = 0
       for (let t = 0; t < earlyYears; t++) {
-        pv += withdrawalVal * Math.pow(1 + g, t) / Math.pow(1 + rPostVal, t + 1)
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, t)
+        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, t)
+        let ssAdj = 0
+        if (t >= ssOffset) ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, t - ssOffset)
+        const net = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
+        pv += net / Math.pow(1 + rPostVal, t + 1)
       }
       earlyNeeded = pv
     }
@@ -317,7 +355,15 @@ export default function App() {
       } else {
         // withdrawals at end of year
         const yearsSinceRet = age - retirementAgeNum
-        let toWithdraw = withdrawalVal * Math.pow(1 + g, Math.max(0, yearsSinceRet))
+        // compute effective withdrawal accounting for pension and SS with their own inflation
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, Math.max(0, yearsSinceRet))
+        const pensionAdjLocal = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, Math.max(0, yearsSinceRet))
+        let ssAdjLocal = 0
+        const ageSinceSS = age - ssStartAgeNum
+        if (age >= ssStartAgeNum) {
+          ssAdjLocal = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, Math.max(0, ageSinceSS))
+        }
+        let toWithdraw = Math.max(0, baseWithdrawal - pensionAdjLocal - ssAdjLocal)
         if (age < penaltyFreeAgeNum) {
           if (nonretBal >= toWithdraw) {
             nonretBal -= toWithdraw
@@ -437,12 +483,30 @@ export default function App() {
           <div className="section-title">Retirement Cashflow</div>
           <div className="row-inline">
             <div className="field">
-              <label>Desired yearly withdrawal</label>
+              <label>Desired yearly retirement income</label>
               <input value={withdrawal} onChange={e => setWithdrawal(e.target.value)} placeholder="50000" />
             </div>
             <div className="field">
               <label>Penalty-free withdrawal age</label>
               <input type="number" value={penaltyFreeAge} onChange={e => setPenaltyFreeAge(e.target.value)} placeholder="59.5" />
+            </div>
+            <div className="field">
+              <label>Monthly pension starting at retirement</label>
+              <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
+            </div>
+          </div>
+          <div className="row-inline">
+            <div className="field">
+              <label>Social Security start age</label>
+              <input value={ssStartAge} onChange={e => setSsStartAge(e.target.value)} placeholder="67" />
+            </div>
+            <div className="field">
+              <label>Monthly Social Security benefit</label>
+              <input value={monthlySocialSecurity} onChange={e => setMonthlySocialSecurity(e.target.value)} placeholder="0" />
+            </div>
+            <div className="field">
+              <label>Fixed income yearly inflation adjustment (%)</label>
+              <input value={fixedIncomeInflation} onChange={e => setFixedIncomeInflation(e.target.value)} placeholder="0" />
             </div>
           </div>
         </div>
@@ -494,6 +558,10 @@ export default function App() {
             rec401kDollar={recommended401kDollar}
             recEmployerMatchDollar={recommendedEmployerMatchDollar}
             recIraDollar={recommendedIra}
+            pensionAnnual={pensionAnnual}
+            ssAnnual={ssAnnual}
+            ssStartAge={ssStartAgeNum}
+            fixedIncomeInflation={fixedIncomeInflationPct}
           />
         </div>
       </div>
@@ -502,7 +570,7 @@ export default function App() {
 }
 
 
-function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, initialRet, initialNonRet, annualRetContrib, annualNonRetContrib, withdrawal, inflation, rPre, rPost, rec401kDollar = 0, recEmployerMatchDollar = 0, recIraDollar = 0 }) {
+function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, initialRet, initialNonRet, annualRetContrib, annualNonRetContrib, withdrawal, inflation, rPre, rPost, rec401kDollar = 0, recEmployerMatchDollar = 0, recIraDollar = 0, pensionAnnual = 0, ssAnnual = 0, ssStartAge = 0, fixedIncomeInflation = 0 }) {
   const endAge = Math.max(lastAge, penaltyFreeAge, retirementAge)
   const years = Math.max(0, endAge - currentAge)
 
@@ -528,7 +596,14 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
         nonretBal += annualNonRetContribLocal
       } else {
         const yearsSinceRet = age - Number(retirementAge)
-        let toWithdraw = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+        const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+        let ssAdj = 0
+        if (age >= ssStartAge) {
+          const sinceSS = age - ssStartAge
+          ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+        }
+        let toWithdraw = Math.max(0, baseW - pensionAdj - ssAdj)
         if (age < penaltyFreeAge) {
           if (nonretBal >= toWithdraw) {
             nonretBal -= toWithdraw
@@ -571,7 +646,15 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
         retBal += annualRetContrib
         nonretBal += annualNonRetContrib
       } else {
-        let toWithdraw = withdrawal
+        const yearsSinceRet = age - Number(retirementAge)
+        const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+        let ssAdj = 0
+        if (age >= ssStartAge) {
+          const sinceSS = age - ssStartAge
+          ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+        }
+        let toWithdraw = Math.max(0, baseW - pensionAdj - ssAdj)
         if (age < penaltyFreeAge) {
           if (nonretBal >= toWithdraw) {
             nonretBal -= toWithdraw
@@ -612,13 +695,21 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
     const screenX = rect.left + svgX
     // place tooltip at the top of the chart area (horizontal follows cursor)
     const screenTop = rect.top + 8
-    // compute inflation-adjusted withdrawal at this age (0 before retirement)
-    let w = 0
+    // compute withdrawal totals and investment-only withdrawals at this age
+    let baseW = 0
+    let investW = 0
     if (p.age >= retirementAge) {
       const yearsSinceRet = p.age - Number(retirementAge)
-      w = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+      let ssAdj = 0
+      if (p.age >= ssStartAge) {
+        const sinceSS = p.age - ssStartAge
+        ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+      }
+      investW = Math.max(0, baseW - pensionAdj - ssAdj)
     }
-    setTooltip({ idx, age: p.age, ret: p.retBal, nonret: p.nonretBal, total, withdrawal: w, x: svgX, screenX, topY: screenTop })
+    setTooltip({ idx, age: p.age, ret: p.retBal, nonret: p.nonretBal, total, withdrawal: baseW, investWithdrawal: investW, x: svgX, screenX, topY: screenTop })
   }
 
   function handleMouseLeave() { setTooltip(null) }
@@ -645,12 +736,20 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
     const svgX = x(idx)
     const screenX = rect.left + svgX
     const screenTop = rect.top + 8
-    let w = 0
+    let baseW = 0
+    let investW = 0
     if (p.age >= retirementAge) {
       const yearsSinceRet = p.age - Number(retirementAge)
-      w = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+      let ssAdj = 0
+      if (p.age >= ssStartAge) {
+        const sinceSS = p.age - ssStartAge
+        ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+      }
+      investW = Math.max(0, baseW - pensionAdj - ssAdj)
     }
-    setTooltip({ idx, age: p.age, ret: p.retBal, nonret: p.nonretBal, total, withdrawal: w, x: svgX, screenX, topY: screenTop })
+    setTooltip({ idx, age: p.age, ret: p.retBal, nonret: p.nonretBal, total, withdrawal: baseW, investWithdrawal: investW, x: svgX, screenX, topY: screenTop })
   }
 
   function handleTouchEnd() {
@@ -741,9 +840,38 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
       const age = p.age
       if (age < retirementAge) return
       const yearsSinceRet = age - Number(retirementAge)
-      const w = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+      let ssAdj = 0
+      if (age >= ssStartAge) {
+        const sinceSS = age - ssStartAge
+        ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+      }
+      const w = baseW // total desired withdrawal (includes fixed incomes separately)
       const cmd = (d === '') ? 'M' : 'L'
       d += `${cmd}${x(i)},${y(w)} `
+    })
+    return d
+  }
+
+  // withdrawal from investments (excludes pension & SS) path (explicitly drawn too)
+  const investWithdrawalPath = () => {
+    if (!points.length) return ''
+    let d = ''
+    points.forEach((p, i) => {
+      const age = p.age
+      if (age < retirementAge) return
+      const yearsSinceRet = age - Number(retirementAge)
+      const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
+      const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+      let ssAdj = 0
+      if (age >= ssStartAge) {
+        const sinceSS = age - ssStartAge
+        ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
+      }
+      const investW = Math.max(0, baseW - pensionAdj - ssAdj)
+      const cmd = (d === '') ? 'M' : 'L'
+      d += `${cmd}${x(i)},${y(investW)} `
     })
     return d
   }
@@ -791,6 +919,20 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
           <path d={areaPathRetStack(points)} fill="#0b79f7" opacity={0.85} />
           {/* withdrawal amount line (solid) */}
           <path d={withdrawalPath()} fill="none" stroke="#e65c5c" strokeWidth={2} />
+          <path d={investWithdrawalPath()} fill="none" stroke="#f39c12" strokeWidth={2} strokeDasharray="6 4" />
+
+          {/* Social Security start age marker (dashed vertical) */}
+          {ssStartAge && ssStartAge !== retirementAge && ssStartAge >= currentAge && ssStartAge <= endAge && (
+            (() => {
+              const idxSS = ssStartAge - currentAge
+              const xSS = x(idxSS)
+              return (
+                <g key="ss-start">
+                  <line x1={xSS} x2={xSS} y1={pad} y2={height - pad} stroke="#666" strokeDasharray="4 4" strokeWidth={1} opacity={0.9} />
+                </g>
+              )
+            })()
+          )}
 
           {/* hover markers */}
           {tooltip && (
@@ -841,11 +983,15 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
               <div style={{width:10,height:10,borderRadius:6,background:'#0b8a3e'}} />
               <div style={{fontSize:12}}>Non-retirement: ${fmt(tooltip.nonret)}</div>
             </div>
+            <div style={{fontSize:12, fontWeight:700, paddingBottom:6}}>Total investments: ${fmt(tooltip.total)}</div>
             <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
               <div style={{width:10,height:10,borderRadius:6,background:'#e65c5c'}} />
-              <div style={{fontSize:12}}>Withdrawal: ${fmt(tooltip.withdrawal || 0)}</div>
+              <div style={{fontSize:12}}>Total income: ${fmt(tooltip.withdrawal || 0)}</div>
             </div>
-            <div style={{fontSize:12, fontWeight:700}}>Total: ${fmt(tooltip.total)}</div>
+            <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
+              <div style={{width:10,height:10,borderRadius:6,background:'#f39c12'}} />
+              <div style={{fontSize:12}}>Withdrawals: ${fmt(tooltip.investWithdrawal || 0)}</div>
+            </div>
           </div>
         </div>
       )}
@@ -862,6 +1008,12 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
             <div style={{fontSize:13}}>Penalty-free age</div>
           </div>
         )}
+        {ssStartAge && ssStartAge !== retirementAge && ssStartAge >= currentAge && ssStartAge <= endAge && (
+          <div style={{display:'flex', alignItems:'center', gap:8}}>
+            <div style={{width:0,height:16,borderLeft:'2px dashed #666'}} />
+            <div style={{fontSize:13}}>Social Security start</div>
+          </div>
+        )}
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <div style={{width:28, height:10, background:'#0b79f7', borderRadius:4}} />
           <div style={{fontSize:13}}>Retirement accounts</div>
@@ -872,7 +1024,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
         </div>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <div style={{width:28, height:2, background:'#e65c5c', borderRadius:2}} />
-          <div style={{fontSize:13}}>Withdrawal</div>
+          <div style={{fontSize:13}}>Total retirement income</div>
         </div>
       </div>
 
