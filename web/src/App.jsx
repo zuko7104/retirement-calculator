@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react'
 
 function parseNumber(v, fallback = 0) {
   if (v === '' || v == null) return fallback
-  return Number(String(v).replace(/[,\$]/g, '')) || fallback
+  const n = Number(String(v).replace(/[,\$]/g, ''))
+  return Number.isFinite(n) ? n : fallback
 }
 
 // persistent state hook using localStorage
@@ -50,6 +51,8 @@ function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, 
       ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, t - ssOffset)
     }
     const netWithdrawal = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
+    // discount to retirement: withdrawals occur at end of each retirement year,
+    // so the first withdrawal is one year after retirement (exponent t+1).
     pv += netWithdrawal / Math.pow(1 + rPost, t + 1)
   }
   targetCorpus = pv
@@ -210,6 +213,8 @@ export default function App() {
         let ssAdj = 0
         if (t >= ssOffset) ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, t - ssOffset)
         const net = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
+        // discount to retirement: early-year withdrawals are payments in the
+        // retirement-year sequence; discount by (1+r)^(t+1) to align timing.
         pvEarly += net / Math.pow(1 + rPostVal, t + 1)
       }
       earlyNeeded = pvEarly
@@ -273,49 +278,60 @@ export default function App() {
   let remainingNeed = additionalRetAnnual
 
   // Step 1: cover via employee 401(k) up to employer match percent (dollar-for-dollar assumed)
-  const matchEmpDollarIfFull = grossPay * (employerMatchPctNum / 100) // employee contribution needed to get full match
-  const matchEmployerDollarIfFull = grossPay * (employerMatchPctNum / 100)
-  let emp401kPctForMatch = 0
+  const employerMatchCap = grossPay * (employerMatchPctNum / 100)
   let emp401kDollarForMatch = 0
+  let emp401kPctForMatch = 0
   let employerMatchDollarApplied = 0
-  if (grossPay > 0 && employerMatchPctNum > 0 && remainingNeed > 0) {
-    const totalFromFullMatch = (matchEmpDollarIfFull + matchEmployerDollarIfFull)
-    if (remainingNeed >= totalFromFullMatch) {
-      // need at least the full match
-      emp401kPctForMatch = Math.ceil(employerMatchPctNum)
-      emp401kDollarForMatch = grossPay * (emp401kPctForMatch / 100)
-      employerMatchDollarApplied = grossPay * (emp401kPctForMatch / 100)
-      remainingNeed = Math.max(0, remainingNeed - (emp401kDollarForMatch + employerMatchDollarApplied))
-    } else {
-      // only part of the full match is needed
-      const pNeeded = (remainingNeed / 2) / grossPay * 100
-      emp401kPctForMatch = Math.min(employerMatchPctNum, Math.ceil(pNeeded))
-      emp401kDollarForMatch = grossPay * (emp401kPctForMatch / 100)
-      employerMatchDollarApplied = grossPay * (emp401kPctForMatch / 100)
-      remainingNeed = Math.max(0, remainingNeed - (emp401kDollarForMatch + employerMatchDollarApplied))
+  const employeeCapDollar = Math.max(0, parseNumber(four01kLimit))
+  if (grossPay > 0 && employerMatchCap > 0 && remainingNeed > 0) {
+    // Simple allocation to capture employer match first:
+    // Employee contributes up to the employer match dollar amount (but not exceeding employee cap or remaining need).
+    emp401kDollarForMatch = Math.min(grossPay, employeeCapDollar, employerMatchCap, remainingNeed / 2)
+    emp401kPctForMatch = (emp401kDollarForMatch / grossPay) * 100
+    if (emp401kDollarForMatch < employeeCapDollar) {
+      emp401kPctForMatch = Math.ceil(emp401kPctForMatch)
+      emp401kDollarForMatch = Math.min(grossPay * (emp401kPctForMatch / 100), employeeCapDollar)
+      if (emp401kDollarForMatch == employeeCapDollar) {
+        emp401kPctForMatch = (emp401kDollarForMatch / grossPay) * 100
+      }
     }
+    employerMatchDollarApplied = Math.min(employerMatchCap, emp401kDollarForMatch)
+    remainingNeed = Math.max(0, remainingNeed - (emp401kDollarForMatch + employerMatchDollarApplied))
+    // compute percent for display (allow fractional percent)
   }
 
-  // Step 2: IRA up to configured limit
-  const recommendedIra = Math.min(parseNumber(iraLimit), remainingNeed)
+  // Step 2: IRA up to configured limit (default to 7500 if field empty)
+  let recommendedIra = Math.min(parseNumber(iraLimit, 7500), remainingNeed)
   remainingNeed = Math.max(0, remainingNeed - recommendedIra)
 
   // Step 3: 401(k) beyond match up to FOUR01K_LIMIT (employee deferral limit)
-  // compute how much employee can still contribute in dollars
-  const maxEmployee401kDollar = Math.max(0, parseNumber(four01kLimit)) // employee limit in dollars
-  // employee already allocated emp401kDollarForMatch
-  const remainingEmployee401kCap = Math.max(0, maxEmployee401kDollar - emp401kDollarForMatch)
-  const emp401kDollarExtra = Math.min(remainingNeed, remainingEmployee401kCap)
-  const emp401kPctExtra = grossPay > 0 ? Math.ceil((emp401kDollarExtra / grossPay) * 100) : 0
-  const emp401kDollarExtraRounded = grossPay > 0 ? grossPay * (emp401kPctExtra / 100) : emp401kDollarExtra
-  // apply extra (rounded) but don't exceed cap
-  const emp401kDollarExtraApplied = Math.min(remainingEmployee401kCap, emp401kDollarExtraRounded)
-  remainingNeed = Math.max(0, remainingNeed - emp401kDollarExtraApplied)
+  const emp401kDollarExtraRec = Math.min(remainingNeed, four01kLimit - emp401kDollarForMatch)
+  remainingNeed = Math.max(0, remainingNeed - emp401kDollarExtraRec)
 
   // totals for recommendations
-  const recommended401kDollar = emp401kDollarForMatch + emp401kDollarExtraApplied
-  const recommended401kPct = grossPay > 0 ? Math.ceil((recommended401kDollar / grossPay) * 100) : 0
+  let recommended401kDollar = emp401kDollarForMatch + emp401kDollarExtraRec
+  if (recommended401kDollar < employeeCapDollar && recommended401kDollar > 0) {
+    let oldVal = recommended401kDollar
+    let recommendedPct = (recommended401kDollar / grossPay) * 100
+    recommendedPct = Math.ceil(recommendedPct)
+    recommended401kDollar = Math.min(employeeCapDollar, grossPay * (recommendedPct / 100))
+    if (recommended401kDollar != oldVal) {
+      recommendedIra = Math.max(0, recommendedIra - (recommended401kDollar - oldVal))
+    }
+  }
+  const rec401kDollarUsed = recommended401kDollar
+  const recommended401kPct = grossPay > 0 ? (recommended401kDollar / grossPay) * 100 : 0
   const recommendedEmployerMatchDollar = employerMatchDollarApplied
+  // Recompute employer match based on the final used employee contribution
+  const recEmployerMatchDollarUsed = Math.min(employerMatchCap, rec401kDollarUsed)
+
+  // If rounding increased retirement contributions, reduce the non-ret annual need accordingly
+  const deltaEmployee = rec401kDollarUsed - recommended401kDollar
+  const deltaMatch = recEmployerMatchDollarUsed - recommendedEmployerMatchDollar
+  const totalDeltaRet = Math.max(0, deltaEmployee + deltaMatch)
+  if (totalDeltaRet > 0) {
+    neededNonretAnnual = Math.max(0, (neededNonretAnnual || 0) - totalDeltaRet)
+  }
 
   // If we couldn't allocate the full needed retirement annual amount (due to caps),
   // shift the remaining annual need into non-retirement annual savings so the
@@ -330,8 +346,8 @@ export default function App() {
   // leftover moved to non-ret savings)
   const { ret: projRetAtRetWithRec, nonret: projNonretAtRetWithRec } = projectBalancesWithRecommendations(
     neededNonretAnnual,
-    recommended401kDollar,
-    recommendedEmployerMatchDollar,
+    rec401kDollarUsed,
+    recEmployerMatchDollarUsed,
     recommendedIra
   )
 
@@ -364,24 +380,17 @@ export default function App() {
           ssAdjLocal = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, Math.max(0, ageSinceSS))
         }
         let toWithdraw = Math.max(0, baseWithdrawal - pensionAdjLocal - ssAdjLocal)
-        if (age < penaltyFreeAgeNum) {
-          if (nonretBal >= toWithdraw) {
-            nonretBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= nonretBal
-            nonretBal = 0
-          }
-          if (toWithdraw > 0) retBal = Math.max(0, retBal - toWithdraw)
+        // Prioritize non-retirement accounts when possible (including after penalty-free age)
+        if (nonretBal >= toWithdraw) {
+          nonretBal -= toWithdraw
+          toWithdraw = 0
         } else {
-          if (retBal >= toWithdraw) {
-            retBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= retBal
-            retBal = 0
-          }
-          if (toWithdraw > 0) nonretBal = Math.max(0, nonretBal - toWithdraw)
+          toWithdraw -= nonretBal
+          nonretBal = 0
+        }
+        if (toWithdraw > 0) {
+          retBal = Math.max(0, retBal - toWithdraw)
+          toWithdraw = 0
         }
       }
     }
@@ -462,10 +471,6 @@ export default function App() {
               <label>Expected return during retirement (%)</label>
               <input value={rPost} onChange={e => setRPost(e.target.value)} placeholder="4" />
             </div>
-            <div className="field">
-              <label>Expected annual inflation (%)</label>
-              <input value={inflation} onChange={e => setInflation(e.target.value)} placeholder="2" />
-            </div>
           </div>
           <div className="row-inline">
             <div className="field">
@@ -483,16 +488,16 @@ export default function App() {
           <div className="section-title">Retirement Cashflow</div>
           <div className="row-inline">
             <div className="field">
-              <label>Desired yearly retirement income</label>
+              <label>Desired initial retirement income</label>
               <input value={withdrawal} onChange={e => setWithdrawal(e.target.value)} placeholder="50000" />
+            </div>
+            <div className="field">
+              <label>Annual retirement income change (%)</label>
+              <input value={inflation} onChange={e => setInflation(e.target.value)} placeholder="2" />
             </div>
             <div className="field">
               <label>Penalty-free withdrawal age</label>
               <input type="number" value={penaltyFreeAge} onChange={e => setPenaltyFreeAge(e.target.value)} placeholder="59.5" />
-            </div>
-            <div className="field">
-              <label>Monthly pension starting at retirement</label>
-              <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
             </div>
           </div>
           <div className="row-inline">
@@ -503,6 +508,12 @@ export default function App() {
             <div className="field">
               <label>Monthly Social Security benefit</label>
               <input value={monthlySocialSecurity} onChange={e => setMonthlySocialSecurity(e.target.value)} placeholder="0" />
+            </div>
+          </div>
+          <div className="row-inline">
+            <div className="field">
+              <label>Monthly pension starting at retirement</label>
+              <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
             </div>
             <div className="field">
               <label>Fixed income yearly inflation adjustment (%)</label>
@@ -521,7 +532,7 @@ export default function App() {
 
           <div className="result-group">
             <div className="result-item result-item-header">
-              <div className="result-total-value">${fmt(targetCorpus)}</div>
+              <div className="result-total-value">${fmt(projRetAtRetWithRec + projNonretAtRetWithRec)}</div>
               <div className="result-key header-label">Target balance at retirement</div>
             </div>
             <div className="result-item"><div className="result-key muted-key">Retirement accounts</div><div className="result-value result-value-small">${fmt(projRetAtRetWithRec)}</div></div>
@@ -530,13 +541,13 @@ export default function App() {
 
           <div className="result-group">
             <div className="result-item result-item-header">
-              <div className="result-total-value">${fmt((neededNonretAnnual || 0) + (recommendedIra || 0) + (recommended401kDollar || 0) + (recommendedEmployerMatchDollar || 0))}</div>
+              <div className="result-total-value">${fmt((neededNonretAnnual || 0) + (recommendedIra || 0) + (rec401kDollarUsed || 0) + (recEmployerMatchDollarUsed || 0))}</div>
               <div className="result-key header-label">Needed annual savings</div>
             </div>
             <div className="result-item"><div className="result-key muted-key">Non-retirement</div><div className="result-value result-value-small">${fmt(neededNonretAnnual)}</div></div>
             <div className="result-item"><div className="result-key muted-key">IRA</div><div className="result-value result-value-small">${fmt(recommendedIra)}</div></div>
-            <div className="result-item"><div className="result-key muted-key">401(k)</div><div className="result-value result-value-small">{recommended401kDollar > 0 ? `${recommended401kPct}% ($${fmt(recommended401kDollar)})` : '—'}</div></div>
-            <div className="result-item"><div className="result-key muted-key">Employer match</div><div className="result-value result-value-small">${fmt(recommendedEmployerMatchDollar)}</div></div>
+            <div className="result-item"><div className="result-key muted-key">401(k)</div><div className="result-value result-value-small">{rec401kDollarUsed > 0 ? `${Math.round(recommended401kPct * 100) / 100}% ($${fmt(rec401kDollarUsed)})` : '—'}</div></div>
+            <div className="result-item"><div className="result-key muted-key">Employer match</div><div className="result-value result-value-small">${fmt(recEmployerMatchDollarUsed)}</div></div>
           </div>
         </div>
 
@@ -555,8 +566,8 @@ export default function App() {
             inflation={inflationPct}
             rPre={rPrePct}
             rPost={rPostPct}
-            rec401kDollar={recommended401kDollar}
-            recEmployerMatchDollar={recommendedEmployerMatchDollar}
+            rec401kDollar={rec401kDollarUsed}
+            recEmployerMatchDollar={recEmployerMatchDollarUsed}
             recIraDollar={recommendedIra}
             pensionAnnual={pensionAnnual}
             ssAnnual={ssAnnual}
@@ -604,24 +615,16 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
           ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
         }
         let toWithdraw = Math.max(0, baseW - pensionAdj - ssAdj)
-        if (age < penaltyFreeAge) {
-          if (nonretBal >= toWithdraw) {
-            nonretBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= nonretBal
-            nonretBal = 0
-          }
-          if (toWithdraw > 0) retBal = Math.max(0, retBal - toWithdraw)
+        // Prefer non-retirement funds first (including after penalty-free age)
+        if (nonretBal >= toWithdraw) {
+          nonretBal -= toWithdraw
+          toWithdraw = 0
         } else {
-          if (retBal >= toWithdraw) {
-            retBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= retBal
-            retBal = 0
-          }
-          if (toWithdraw > 0) nonretBal = Math.max(0, nonretBal - toWithdraw)
+          toWithdraw -= nonretBal
+          nonretBal = 0
+        }
+        if (toWithdraw > 0) {
+          retBal = Math.max(0, retBal - toWithdraw)
         }
       }
     }
@@ -655,24 +658,16 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
           ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, sinceSS))
         }
         let toWithdraw = Math.max(0, baseW - pensionAdj - ssAdj)
-        if (age < penaltyFreeAge) {
-          if (nonretBal >= toWithdraw) {
-            nonretBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= nonretBal
-            nonretBal = 0
-          }
-          if (toWithdraw > 0) retBal = Math.max(0, retBal - toWithdraw)
+        // Prefer non-retirement funds first (including after penalty-free age)
+        if (nonretBal >= toWithdraw) {
+          nonretBal -= toWithdraw
+          toWithdraw = 0
         } else {
-          if (retBal >= toWithdraw) {
-            retBal -= toWithdraw
-            toWithdraw = 0
-          } else {
-            toWithdraw -= retBal
-            retBal = 0
-          }
-          if (toWithdraw > 0) nonretBal = Math.max(0, nonretBal - toWithdraw)
+          toWithdraw -= nonretBal
+          nonretBal = 0
+        }
+        if (toWithdraw > 0) {
+          retBal = Math.max(0, retBal - toWithdraw)
         }
       }
     }
@@ -785,7 +780,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
   // choose a 'nice' step for y-axis and round the y-axis maximum
   function chooseStep(max) {
     if (!max || max <= 0) return 100000
-    const candidates = [1000000, 500000, 250000, 100000, 50000, 25000, 10000, 5000, 1000, 500, 100]
+    const candidates = [100000000, 50000000, 10000000, 5000000, 1000000, 500000, 250000, 100000, 50000, 25000, 10000, 5000, 1000, 500, 100]
     for (const s of candidates) {
       const ticks = Math.ceil(max / s)
       if (ticks >= 3 && ticks <= 8) return s
