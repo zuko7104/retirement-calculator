@@ -101,7 +101,7 @@ function InfoIcon({ text }) {
   )
 }
 
-function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, rPre, rPost, g, pensionAnnual = 0, ssAnnual = 0, ssOffset = 0, fixedIncomeInflation = 0) {
+function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, rPre, rPost, g, pensionAnnual = 0, ssAnnual = 0, ssOffset = 0, pensionInflation = 0, fixedIncomeInflation = 0) {
   const N = yearsInRetirement
   if (N <= 0) return { targetCorpus: 0, annual: 0 }
 
@@ -112,8 +112,8 @@ function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, 
   for (let t = 0; t < N; t++) {
     // base withdrawal in year t (t=0 is first year of retirement)
     const baseWithdrawal = withdrawal * Math.pow(1 + g, t)
-    // pension starts at retirement and grows by fixedIncomeInflation
-    const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, t)
+    // pension starts at retirement and grows by its own pensionInflation
+    const pensionAdj = pensionAnnual * Math.pow(1 + pensionInflation, t)
     // social security starts at ssOffset (years after retirement) and grows by fixedIncomeInflation from its start
     let ssAdj = 0
     if (t >= ssOffset) {
@@ -157,12 +157,17 @@ export default function App() {
   const [lastAge, setLastAge] = usePersistentState('fin.lastAge', '95')
   const [penaltyFreeAge, setPenaltyFreeAge] = usePersistentState('fin.penaltyFreeAge', '59.5')
   const [withdrawal, setWithdrawal] = usePersistentState('fin.withdrawal', '50000')
+  const [withdrawalToday, setWithdrawalToday] = usePersistentState('fin.withdrawalToday', '0')
   const [monthlyFixedIncome, setMonthlyFixedIncome] = usePersistentState('fin.monthlyFixedIncome', '0')
   const [monthlyPension, setMonthlyPension] = usePersistentState('fin.monthlyPension', '0')
   const [ssStartAge, setSsStartAge] = usePersistentState('fin.ssStartAge', '67')
   const [monthlySocialSecurity, setMonthlySocialSecurity] = usePersistentState('fin.monthlySocialSecurity', '0')
+  const [monthlySocialSecurityStart, setMonthlySocialSecurityStart] = usePersistentState('fin.monthlySocialSecurityStart', '0')
+  const [ssAdjustment, setSsAdjustment] = usePersistentState('fin.ssAdjustment', '0')
   const [fixedIncomeInflation, setFixedIncomeInflation] = usePersistentState('fin.fixedIncomeInflation', '0')
+  const [pensionInflation, setPensionInflation] = usePersistentState('fin.pensionInflation', '0')
   const [inflation, setInflation] = usePersistentState('fin.inflation', '2')
+  const [inflationDuringRet, setInflationDuringRet] = usePersistentState('fin.inflationDuringRet', '2')
   const [rPre, setRPre] = usePersistentState('fin.rPre', '6')
   const [rPost, setRPost] = usePersistentState('fin.rPost', '4')
 
@@ -185,12 +190,91 @@ export default function App() {
   const monthlyPensionVal = parseNumber(monthlyPension, 0)
   const ssStartAgeNum = parseNumber(ssStartAge, retirementAgeNum)
   const monthlySocialSecurityVal = parseNumber(monthlySocialSecurity, 0)
+  const monthlySocialSecurityStartVal = parseNumber(monthlySocialSecurityStart, 0)
+  const ssAdjustmentPct = parseNumber(ssAdjustment, 0) / 100
   const fixedIncomeInflationPct = parseNumber(fixedIncomeInflation, 0) / 100
+  const pensionInflationPct = parseNumber(pensionInflation, 0) / 100
   const fixedIncomeAnnual = monthlyFixedIncomeVal * 12
   const pensionAnnual = monthlyPensionVal * 12
-  const ssAnnual = monthlySocialSecurityVal * 12
+  // Use the benefit amount at start (future dollars) for annual SS in retirement calculations
+  const ssAnnual = monthlySocialSecurityStartVal * 12
   const ssOffset = Math.max(0, ssStartAgeNum - retirementAgeNum)
+
+  // Years until Social Security benefit starts (may be fractional)
+  const yearsUntilSsStart = Math.max(0, ssStartAgeNum - curAgeNum)
+
+  // Keep `monthlySocialSecurity` (current dollars) and
+  // `monthlySocialSecurityStart` (dollars at benefit start) in sync.
+  // When the user edits one field we compute the other using `ssAdjustmentPct`.
+  function onChangeSsNow(v) {
+    setMonthlySocialSecurity(v)
+    const now = parseNumber(v, 0)
+    const future = now * Math.pow(1 + ssAdjustmentPct, yearsUntilSsStart)
+    setMonthlySocialSecurityStart(String(Number(future.toFixed(2))))
+  }
+
+  function onChangeSsStart(v) {
+    setMonthlySocialSecurityStart(v)
+    const future = parseNumber(v, 0)
+    const denom = Math.pow(1 + ssAdjustmentPct, yearsUntilSsStart)
+    const now = denom > 0 ? future / denom : future
+    setMonthlySocialSecurity(String(Number(now.toFixed(2))))
+  }
+
+  // When adjustment percentage or start age changes, hold current (today's $)
+  // steady and recompute future benefit.
+  function onChangeSsAdjustment(v) {
+    setSsAdjustment(v)
+    const adj = parseNumber(v, 0) / 100
+    const now = parseNumber(monthlySocialSecurity, 0)
+    const future = now * Math.pow(1 + adj, yearsUntilSsStart)
+    setMonthlySocialSecurityStart(String(Number(future.toFixed(2))))
+  }
+
+  function onChangeSsStartAge(v) {
+    setSsStartAge(v)
+    const years = Math.max(0, parseNumber(v, retirementAgeNum) - curAgeNum)
+    const now = parseNumber(monthlySocialSecurity, 0)
+    const future = now * Math.pow(1 + ssAdjustmentPct, years)
+    setMonthlySocialSecurityStart(String(Number(future.toFixed(2))))
+  }
+
+  // Keep `withdrawalToday` (today's $) and `withdrawal` (dollars at retirement) in sync.
+  // When the user edits one field we compute the other using `inflationPct`.
+  const yearsUntilRetirement = Math.max(0, retirementAgeNum - curAgeNum)
+  function onChangeWithdrawalNow(v) {
+    setWithdrawalToday(v)
+    const nowVal = parseNumber(v, 0)
+    const future = nowVal * Math.pow(1 + inflationPct, yearsUntilRetirement)
+    setWithdrawal(String(Number(future.toFixed(2))))
+  }
+
+  function onChangeWithdrawalAtRet(v) {
+    setWithdrawal(v)
+    const future = parseNumber(v, 0)
+    const denom = Math.pow(1 + inflationPct, yearsUntilRetirement)
+    const nowVal = denom > 0 ? future / denom : future
+    setWithdrawalToday(String(Number(nowVal.toFixed(2))))
+  }
+
+  // When inflation or retirement age changes, hold today's spending steady and recompute future.
+  function onChangeInflation(v) {
+    setInflation(v)
+    const adj = parseNumber(v, 2) / 100
+    const nowVal = parseNumber(withdrawalToday, 0)
+    const future = nowVal * Math.pow(1 + adj, yearsUntilRetirement)
+    setWithdrawal(String(Number(future.toFixed(2))))
+  }
+
+  function onChangeRetirementAge(v) {
+    setRetirementAge(v)
+    const years = Math.max(0, parseNumber(v, 65) - curAgeNum)
+    const nowVal = parseNumber(withdrawalToday, 0)
+    const future = nowVal * Math.pow(1 + inflationPct, years)
+    setWithdrawal(String(Number(future.toFixed(2))))
+  }
   const inflationPct = parseNumber(inflation, 2) / 100
+  const inflationDuringRetPct = parseNumber(inflationDuringRet, 2) / 100
   const rPrePct = parseNumber(rPre, 6) / 100
   const rPostPct = parseNumber(rPost, 4) / 100
   const salaryVal = parseNumber(salary, 80000)
@@ -202,6 +286,19 @@ export default function App() {
   const yearsToRetire = Math.max(0, retirementAgeNum - curAgeNum)
   const yearsInRetirement = Math.max(0, lastAgeNum - retirementAgeNum + 1)
 
+  // On first load, if `withdrawalToday` is unset but `withdrawal` (at-retirement) exists,
+  // compute today's equivalent so the two fields are populated consistently.
+  useEffect(() => {
+    try {
+      if ((withdrawalToday === '' || withdrawalToday === '0' || withdrawalToday == null) && parseNumber(withdrawal, 0) > 0) {
+        const nowVal = parseNumber(withdrawal, 0) / Math.pow(1 + inflationPct, yearsToRetire)
+        setWithdrawalToday(String(Number(nowVal.toFixed(2))))
+      }
+    } catch (e) {}
+    // run only on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const { targetCorpus, annual, lumpNeeded } = calculate(
     currentAssets,
     yearsToRetire,
@@ -209,10 +306,11 @@ export default function App() {
     withdrawalVal,
     rPrePct,
     rPostPct,
-    inflationPct,
+    inflationDuringRetPct,
     pensionAnnual,
     ssAnnual,
     ssOffset,
+    pensionInflationPct,
     fixedIncomeInflationPct
   )
 
@@ -277,8 +375,8 @@ export default function App() {
       // compute PV of net withdrawals in the early years accounting for pension and SS
       let pvEarly = 0
       for (let t = 0; t < earlyYears; t++) {
-        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, t)
-        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, t)
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + inflationDuringRetPct, t)
+        const pensionAdj = pensionAnnual * Math.pow(1 + pensionInflationPct, t)
         let ssAdj = 0
         if (t >= ssOffset) ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, t - ssOffset)
         const net = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
@@ -291,8 +389,8 @@ export default function App() {
       // fallback sum
       let pv = 0
       for (let t = 0; t < earlyYears; t++) {
-        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, t)
-        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, t)
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + inflationDuringRetPct, t)
+          const pensionAdj = pensionAnnual * Math.pow(1 + pensionInflationPct, t)
         let ssAdj = 0
         if (t >= ssOffset) ssAdj = ssAnnual * Math.pow(1 + fixedIncomeInflationPct, t - ssOffset)
         const net = Math.max(0, baseWithdrawal - pensionAdj - ssAdj)
@@ -426,7 +524,7 @@ export default function App() {
     let nonretBal = parseNumber(nonRetirement)
     const ratePre = rPrePct
     const ratePost = rPostPct
-    const g = inflationPct
+    const g = inflationDuringRetPct
     for (let age = curAgeNum; age < targetAge; age++) {
       const rate = age < retirementAgeNum ? ratePre : ratePost
       // growth
@@ -441,8 +539,8 @@ export default function App() {
         // withdrawals at end of year
         const yearsSinceRet = age - retirementAgeNum
         // compute effective withdrawal accounting for pension and SS with their own inflation
-        const baseWithdrawal = withdrawalVal * Math.pow(1 + g, Math.max(0, yearsSinceRet))
-        const pensionAdjLocal = pensionAnnual * Math.pow(1 + fixedIncomeInflationPct, Math.max(0, yearsSinceRet))
+        const baseWithdrawal = withdrawalVal * Math.pow(1 + inflationDuringRetPct, Math.max(0, yearsSinceRet))
+        const pensionAdjLocal = pensionAnnual * Math.pow(1 + pensionInflationPct, Math.max(0, yearsSinceRet))
         let ssAdjLocal = 0
         const ageSinceSS = age - ssStartAgeNum
         if (age >= ssStartAgeNum) {
@@ -488,7 +586,7 @@ export default function App() {
             </div>
             <div className="field">
               <label>Target retirement age <InfoIcon text="Age you plan to retire; determines years to save and when withdrawals start."/></label>
-              <input type="number" value={retirementAge} onChange={e => setRetirementAge(e.target.value)} placeholder="65" />
+              <input type="number" value={retirementAge} onChange={e => onChangeRetirementAge(e.target.value)} placeholder="65" />
             </div>
             <div className="field">
               <label>Age funds need to last until <InfoIcon text="Age until which you want your savings to last."/></label>
@@ -550,44 +648,70 @@ export default function App() {
               <label>401(k) contribution limit <InfoIcon text="Annual employee 401(k) deferral limit used to cap recommendations."/></label>
               <input value={four01kLimit} onChange={e => setFour01kLimit(e.target.value)} placeholder="24500" />
             </div>
-          </div>
-        </div>
-
-        <div className="section">
-          <div className="section-title">Retirement Cashflow</div>
-          <div className="row-inline">
-            <div className="field">
-              <label>Desired initial retirement spending <InfoIcon text="Target yearly retirement spending (retirement age dollars)"/></label>
-              <input value={withdrawal} onChange={e => setWithdrawal(e.target.value)} placeholder="50000" />
-            </div>
-            <div className="field">
-              <label>Annual retirement spending change (%) <InfoIcon text="Expected yearly change in retirement spending (typically inflation)"/></label>
-              <input value={inflation} onChange={e => setInflation(e.target.value)} placeholder="2" />
-            </div>
             <div className="field">
               <label>Penalty-free withdrawal age <InfoIcon text="Age when retirement accounts can be withdrawn without penalty."/></label>
               <input type="number" value={penaltyFreeAge} onChange={e => setPenaltyFreeAge(e.target.value)} placeholder="59.5" />
             </div>
           </div>
+        </div>
+
+        <div className="section">
+          <div className="section-title">Retirement Spending</div>
           <div className="row-inline">
             <div className="field">
-              <label>Social Security start age <InfoIcon text="Age when Social Security benefits begin."/></label>
-              <input value={ssStartAge} onChange={e => setSsStartAge(e.target.value)} placeholder="67" />
+              <label>Retirement spending (today's $) <InfoIcon text="Your desired retirement spending in today's dollars. Editing this recalculates the spending amount at retirement using the inflation rate."/></label>
+              <input value={withdrawalToday} onChange={e => onChangeWithdrawalNow(e.target.value)} placeholder="50000" />
             </div>
             <div className="field">
-              <label>Monthly Social Security benefit <InfoIcon text="Estimated monthly Social Security benefit (at start age)."/></label>
-              <input value={monthlySocialSecurity} onChange={e => setMonthlySocialSecurity(e.target.value)} placeholder="0" />
+              <label>Inflation before retirement (%) <InfoIcon text="Annual inflation used to project today's retirement spending to retirement-age dollars."/></label>
+              <input value={inflation} onChange={e => onChangeInflation(e.target.value)} placeholder="2" />
+            </div>
+            <div className="field">
+              <label>Retirement spending at retirement age ($) <InfoIcon text="Projected retirement spending in retirement-age dollars. Editing this updates the today's-dollar equivalent."/></label>
+              <input value={withdrawal} onChange={e => onChangeWithdrawalAtRet(e.target.value)} placeholder="50000" />
+            </div>
+            <div className="field">
+              <label>Inflation during retirement (%) <InfoIcon text="Annual change applied to retirement spending each year during retirement."/></label>
+              <input value={inflationDuringRet} onChange={e => setInflationDuringRet(e.target.value)} placeholder="2" />
+            </div>
+          </div>
+        </div>
+
+        <div className="section">
+          <div className="section-title">Retirement Income</div>
+          <div className="row-inline">
+            <div className="field">
+              <label>SS monthly benefit (today's $) <InfoIcon text="Current estimated monthly Social Security benefit in today's dollars."/></label>
+              <input value={monthlySocialSecurity} onChange={e => onChangeSsNow(e.target.value)} placeholder="0" />
+            </div>
+            <div className="field">
+              <label>Annual SS adjustment before start (%) <InfoIcon text="Annual change applied to current Social Security benefit to project benefit at start age."/></label>
+              <input value={ssAdjustment} onChange={e => onChangeSsAdjustment(e.target.value)} placeholder="0" />
+            </div>
+            <div className="field">
+              <label>SS monthly benefit (start age $) <InfoIcon text="Projected monthly Social Security benefit at the selected start age."/></label>
+              <input value={monthlySocialSecurityStart} onChange={e => onChangeSsStart(e.target.value)} placeholder="0" />
             </div>
           </div>
           <div className="row-inline">
             <div className="field">
-              <label>Monthly pension starting at retirement <InfoIcon text="Expected monthly pension starting at retirement (added to income)."/></label>
-              <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
+              <label>Social Security start age <InfoIcon text="Age when Social Security benefits begin."/></label>
+              <input value={ssStartAge} onChange={e => onChangeSsStartAge(e.target.value)} placeholder="67" />
             </div>
             <div className="field">
-              <label>Fixed income yearly inflation adjustment (%) <InfoIcon text="Inflation rate applied to pension and Social Security benefits."/></label>
+              <label>Annual SS adjustment after start (%) <InfoIcon text="Inflation rate applied to Social Security benefits."/></label>
               <input value={fixedIncomeInflation} onChange={e => setFixedIncomeInflation(e.target.value)} placeholder="0" />
             </div>
+          </div>
+          <div className="row-inline">
+            <div className="field">
+                <label>Monthly pension starting at retirement <InfoIcon text="Expected monthly pension starting at retirement age."/></label>
+                <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
+              </div>
+              <div className="field">
+                <label>Pension annual inflation (%) <InfoIcon text="Annual inflation applied specifically to pension payments (separate from Social Security)."/></label>
+                <input value={pensionInflation} onChange={e => setPensionInflation(e.target.value)} placeholder="0" />
+              </div>
           </div>
         </div>
       </div>
@@ -632,7 +756,7 @@ export default function App() {
             annualRetContrib={annualRetirementContrib}
             annualNonRetContrib={annualNonRetContrib + neededNonretAnnual}
             withdrawal={withdrawalVal}
-            inflation={inflationPct}
+            inflation={inflationDuringRetPct}
             rPre={rPrePct}
             rPost={rPostPct}
             rec401kDollar={rec401kDollarUsed}
@@ -641,6 +765,7 @@ export default function App() {
             pensionAnnual={pensionAnnual}
             ssAnnual={ssAnnual}
             ssStartAge={ssStartAgeNum}
+            pensionInflation={pensionInflationPct}
             fixedIncomeInflation={fixedIncomeInflationPct}
           />
         </div>
@@ -650,7 +775,7 @@ export default function App() {
 }
 
 
-function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, initialRet, initialNonRet, annualRetContrib, annualNonRetContrib, withdrawal, inflation, rPre, rPost, rec401kDollar = 0, recEmployerMatchDollar = 0, recIraDollar = 0, pensionAnnual = 0, ssAnnual = 0, ssStartAge = 0, fixedIncomeInflation = 0 }) {
+function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, initialRet, initialNonRet, annualRetContrib, annualNonRetContrib, withdrawal, inflation, rPre, rPost, rec401kDollar = 0, recEmployerMatchDollar = 0, recIraDollar = 0, pensionAnnual = 0, ssAnnual = 0, ssStartAge = 0, pensionInflation = 0, fixedIncomeInflation = 0 }) {
   const endAge = Math.max(lastAge, penaltyFreeAge, retirementAge)
   const years = Math.max(0, endAge - currentAge)
 
@@ -677,7 +802,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
       } else {
         const yearsSinceRet = age - Number(retirementAge)
         const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
-        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+        const pensionAdj = pensionAnnual * Math.pow(1 + pensionInflation, Math.max(0, yearsSinceRet))
         let ssAdj = 0
         if (age >= ssStartAge) {
           const sinceSS = age - ssStartAge
@@ -720,7 +845,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
       } else {
         const yearsSinceRet = age - Number(retirementAge)
         const baseW = withdrawal * Math.pow(1 + inflation, Math.max(0, yearsSinceRet))
-        const pensionAdj = pensionAnnual * Math.pow(1 + fixedIncomeInflation, Math.max(0, yearsSinceRet))
+        const pensionAdj = pensionAnnual * Math.pow(1 + pensionInflation, Math.max(0, yearsSinceRet))
         let ssAdj = 0
         if (age >= ssStartAge) {
           const sinceSS = age - ssStartAge
@@ -1050,7 +1175,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
             <div style={{fontSize:12, fontWeight:700, paddingBottom:6}}>Total investments: ${fmt(tooltip.total)}</div>
             <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
               <div style={{width:10,height:10,borderRadius:6,background:'#e65c5c'}} />
-              <div style={{fontSize:12}}>Total income: ${fmt(tooltip.withdrawal || 0)}</div>
+              <div style={{fontSize:12}}>Spending: ${fmt(tooltip.withdrawal || 0)}</div>
             </div>
             <div style={{display:'flex', alignItems:'center', gap:8, marginBottom:6}}>
               <div style={{width:10,height:10,borderRadius:6,background:'#f39c12'}} />
@@ -1088,7 +1213,7 @@ function TimelineChart({ currentAge, lastAge, retirementAge, penaltyFreeAge, ini
         </div>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <div style={{width:28, height:2, background:'#e65c5c', borderRadius:2}} />
-          <div style={{fontSize:13}}>Total retirement income</div>
+          <div style={{fontSize:13}}>Retirement spending</div>
         </div>
       </div>
 
