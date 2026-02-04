@@ -32,6 +32,75 @@ function fmt(n) {
   return Math.ceil(n).toLocaleString()
 }
 
+// Small info icon with hover/tap tooltip for field help. Tooltip is positioned
+// using fixed coordinates computed from the icon's bounding rect so it won't
+// overflow off the screen on narrow/mobile viewports.
+function InfoIcon({ text }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ left: 0, top: 0 })
+  const btnRef = useRef(null)
+
+  function computePos() {
+    const el = btnRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0)
+    const tooltipW = 260
+    const left = Math.max(8, Math.min(rect.left, vw - tooltipW - 8))
+    const top = rect.bottom + 8
+    setPos({ left, top })
+  }
+
+  useEffect(() => {
+    if (!open) return
+    function onResize() { computePos() }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [open])
+
+  return (
+    <span style={{ position: 'relative', display: 'inline-block', marginLeft: 6 }}>
+      <span
+        ref={btnRef}
+        role="button"
+        onMouseEnter={() => { computePos(); setOpen(true) }}
+        onMouseLeave={() => setOpen(false)}
+        onTouchStart={(e) => { try { e.preventDefault() } catch (er) {} ; computePos(); setOpen(o => !o) }}
+        style={{
+          width: 18,
+          height: 18,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 10,
+          background: '#f1f1f1',
+          color: '#333',
+          fontSize: 12,
+          cursor: 'pointer',
+          border: '1px solid #ddd'
+        }}
+      >
+        i
+      </span>
+      {open && (
+        <div style={{
+          position: 'fixed',
+          left: pos.left,
+          top: pos.top,
+          zIndex: 2000,
+          width: 260,
+          padding: 8,
+          background: '#fff',
+          border: '1px solid #ddd',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+          fontSize: 12,
+          borderRadius: 4
+        }}>{text}</div>
+      )}
+    </span>
+  )
+}
+
 function calculate(currentAssets, yearsToRetire, yearsInRetirement, withdrawal, rPre, rPost, g, pensionAnnual = 0, ssAnnual = 0, ssOffset = 0, fixedIncomeInflation = 0) {
   const N = yearsInRetirement
   if (N <= 0) return { targetCorpus: 0, annual: 0 }
@@ -414,15 +483,15 @@ export default function App() {
           <div className="section-title">Profile</div>
           <div className="row-inline">
             <div className="field">
-              <label>Current age</label>
+              <label>Current age <InfoIcon text="Your current age — used to compute years until retirement."/></label>
               <input type="number" value={currentAge} onChange={e => setCurrentAge(e.target.value)} placeholder="40" />
             </div>
             <div className="field">
-              <label>Target retirement age</label>
+              <label>Target retirement age <InfoIcon text="Age you plan to retire; determines years to save and when withdrawals start."/></label>
               <input type="number" value={retirementAge} onChange={e => setRetirementAge(e.target.value)} placeholder="65" />
             </div>
             <div className="field">
-              <label>Age funds need to last until</label>
+              <label>Age funds need to last until <InfoIcon text="Age until which you want your savings to last."/></label>
               <input type="number" value={lastAge} onChange={e => setLastAge(e.target.value)} placeholder="95" />
             </div>
           </div>
@@ -432,15 +501,15 @@ export default function App() {
           <div className="section-title">Income</div>
           <div className="row-inline">
             <div className="field">
-              <label>Salary</label>
+              <label>Salary <InfoIcon text="Annual salary"/></label>
               <input value={salary} onChange={e => setSalary(e.target.value)} placeholder="80000" />
             </div>
             <div className="field">
-              <label>Bonus</label>
+              <label>Bonus <InfoIcon text="Expected annual bonus included in gross pay."/></label>
               <input value={bonus} onChange={e => setBonus(e.target.value)} placeholder="0" />
             </div>
             <div className="field">
-              <label>Employer 401(k) match (%)</label>
+              <label>Employer 401(k) match (%) <InfoIcon text="Employer maximum match percentage of your 401(k) contributions (e.g., 3 means 3% of pay)."/></label>
               <input value={employerMatchPct} onChange={e => setEmployerMatchPct(e.target.value)} placeholder="3" />
             </div>
           </div>
@@ -450,11 +519,11 @@ export default function App() {
           <div className="section-title">Current Accounts</div>
           <div className="row-inline">
             <div className="field">
-              <label>Retirement accounts</label>
+              <label>Retirement accounts <InfoIcon text="Total existing retirement account balances (401(k), IRAs, etc.)."/></label>
               <input value={retirementAccounts} onChange={e => setRetirementAccounts(e.target.value)} placeholder="0" />
             </div>
             <div className="field">
-              <label>Non-retirement investments</label>
+              <label>Non-retirement investments <InfoIcon text="Taxable investment accounts accessible before retirement."/></label>
               <input value={nonRetirement} onChange={e => setNonRetirement(e.target.value)} placeholder="0" />
             </div>
           </div>
@@ -464,21 +533,21 @@ export default function App() {
           <div className="section-title">Assumptions</div>
           <div className="row-inline">
             <div className="field">
-              <label>Expected return before retirement (%)</label>
+              <label>Expected return before retirement (%) <InfoIcon text="Annual return assumed while saving (pre-retirement)."/></label>
               <input value={rPre} onChange={e => setRPre(e.target.value)} placeholder="6" />
             </div>
             <div className="field">
-              <label>Expected return during retirement (%)</label>
+              <label>Expected return during retirement (%) <InfoIcon text="Annual return assumed during retirement (post-retirement)."/></label>
               <input value={rPost} onChange={e => setRPost(e.target.value)} placeholder="4" />
             </div>
           </div>
           <div className="row-inline">
             <div className="field">
-              <label>IRA contribution limit</label>
+              <label>IRA contribution limit <InfoIcon text="Max annual IRA contribution used when recommending IRA allocation (defaults to $7,500)."/></label>
               <input value={iraLimit} onChange={e => setIraLimit(e.target.value)} placeholder="7500" />
             </div>
             <div className="field">
-              <label>401(k) contribution limit</label>
+              <label>401(k) contribution limit <InfoIcon text="Annual employee 401(k) deferral limit used to cap recommendations."/></label>
               <input value={four01kLimit} onChange={e => setFour01kLimit(e.target.value)} placeholder="24500" />
             </div>
           </div>
@@ -488,35 +557,35 @@ export default function App() {
           <div className="section-title">Retirement Cashflow</div>
           <div className="row-inline">
             <div className="field">
-              <label>Desired initial retirement income</label>
+              <label>Desired initial retirement spending <InfoIcon text="Target yearly retirement spending (retirement age dollars)"/></label>
               <input value={withdrawal} onChange={e => setWithdrawal(e.target.value)} placeholder="50000" />
             </div>
             <div className="field">
-              <label>Annual retirement income change (%)</label>
+              <label>Annual retirement spending change (%) <InfoIcon text="Expected yearly change in retirement spending (typically inflation)"/></label>
               <input value={inflation} onChange={e => setInflation(e.target.value)} placeholder="2" />
             </div>
             <div className="field">
-              <label>Penalty-free withdrawal age</label>
+              <label>Penalty-free withdrawal age <InfoIcon text="Age when retirement accounts can be withdrawn without penalty."/></label>
               <input type="number" value={penaltyFreeAge} onChange={e => setPenaltyFreeAge(e.target.value)} placeholder="59.5" />
             </div>
           </div>
           <div className="row-inline">
             <div className="field">
-              <label>Social Security start age</label>
+              <label>Social Security start age <InfoIcon text="Age when Social Security benefits begin."/></label>
               <input value={ssStartAge} onChange={e => setSsStartAge(e.target.value)} placeholder="67" />
             </div>
             <div className="field">
-              <label>Monthly Social Security benefit</label>
+              <label>Monthly Social Security benefit <InfoIcon text="Estimated monthly Social Security benefit (at start age)."/></label>
               <input value={monthlySocialSecurity} onChange={e => setMonthlySocialSecurity(e.target.value)} placeholder="0" />
             </div>
           </div>
           <div className="row-inline">
             <div className="field">
-              <label>Monthly pension starting at retirement</label>
+              <label>Monthly pension starting at retirement <InfoIcon text="Expected monthly pension starting at retirement (added to income)."/></label>
               <input value={monthlyPension} onChange={e => setMonthlyPension(e.target.value)} placeholder="0" />
             </div>
             <div className="field">
-              <label>Fixed income yearly inflation adjustment (%)</label>
+              <label>Fixed income yearly inflation adjustment (%) <InfoIcon text="Inflation rate applied to pension and Social Security benefits."/></label>
               <input value={fixedIncomeInflation} onChange={e => setFixedIncomeInflation(e.target.value)} placeholder="0" />
             </div>
           </div>
